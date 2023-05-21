@@ -1,0 +1,174 @@
+---
+title: "final"
+author: "Yi-chin Tzou"
+date: "2023-05-10"
+output: html_document
+---
+
+```{r, warning=FALSE}
+#import required packages
+library(xts)
+library(lubridate)
+library(tseries)
+library(forecast)
+library(tidyverse)
+library(TSA)
+```
+
+#Load data
+```{r,message=FALSE}
+data <-
+  list.files(path = "/Users/jasmine19970120/Documents/UChicago/2023_Spring/Time_series/final", pattern = "*.csv") %>% 
+  map_df(~read_csv(.))
+head(data)
+```
+
+Since we want to predict the demand for taxi in New York, will only keep column taxi_id and trip_start_timestamp for further analysis
+```{r}
+#select taxi_id, trip_start_timestamp
+df<-data[,c("taxi_id","trip_start_timestamp")]
+
+# Convert "trip_start_timestamp" column to POSIXct
+df$trip_start_timestamp <- as.POSIXct(df$trip_start_timestamp)
+
+head(df)
+```
+
+## Group data by date and hour
+```{r}
+library(dplyr)
+# Extract date and hour from "trip_start_timestamp" and create new columns
+df$date <- as.Date(df$trip_start_timestamp)
+df$hour <- format(df$trip_start_timestamp, format = "%H")
+
+# Group by date and hour and calculate total trip count
+df <- df %>%
+  group_by(date, hour) %>%
+  summarise(total_trips = n())
+
+# Sort the resulting dataframe by date and hour
+df <- df[order(df$date, df$hour), ]
+head(df)
+```
+
+```{r}
+#select data only till 2016-04-01 ~ 06-07
+df <- subset(df, date >= as.Date("2016-04-01") & date <= as.Date("2016-06-07"))
+head(df)
+```
+
+```{r}
+#check if all dates has hour data
+table(df$date)
+```
+From the above table, all the dates has data for hours
+
+# convert data to time series type
+```{r}
+#time_index <- seq(from = as.POSIXct("2013-04-01 00:00"), 
+#                  to = as.POSIXct("2013-05-07 23:00"), by = "hour")
+
+#ts_data <- xts(df$total_trips, order.by = time_index, frequency = 24)
+
+# Convert the date and hour columns to a POSIXct format
+df$timestamp <- as.POSIXct(paste(df$date, df$hour), format = "%Y-%m-%d %H")
+df
+#conver total_trip to time series data
+ts_data <- ts(df$total_trips, start = start(df$timestamp), frequency = 24)
+ts_data
+```
+
+# Exploratory data analysis
+```{r}
+#plot times series data
+plot(ts_data,main="Total trips per hour 4/1-6/7")
+# Plot total trips by hour
+ggplot(df, aes(x = hour, y = total_trips)) +
+  geom_bar(stat = "identity", fill = "seagreen") +
+  labs(x = "Hour", y = "Total Trips", title = "Total Trips by Hour")
+
+```
+
+## Perform ADF and KPSS test and conclude that time series is trend stationary
+```{r}
+#perform ADF test
+adf.test(ts_data)
+#perform KPSS test
+kpss.test(ts_data, null="Trend")
+```
+From the above ADF test, the p-value<0.05, meaning it rejects the null hypothesis, and from KPSS test, the p-value>0.05, which fail to reject the null hypothesis, meaning that from both tests conclude the same result: the data does not have a unit root and is stationary.
+
+# train, test split
+```{r}
+# Define the start and end indices for the training set
+train_start <- c(1, 1)
+train_end <- c(61, 24)
+
+# Define the start and end indices for the test set
+test_start <- c(62, 1)
+test_end <- c(68, 24)
+
+# Split the time series into the training and test sets
+train <- window(ts_data, start = train_start, end = train_end)
+test <- window(ts_data, start = test_start, end = test_end)
+```
+
+#Plot the ACF, PACF to check for seasonality and pattern in our data
+```{r}
+# Plot the ACF and PACF of the dataset
+acf(ts_data,lag.max = 100,main="ACF of dataset")
+pacf(ts_data,lag.max = 100,main="PACF of dataset")
+```
+
+
+## TBATS
+```{r}
+# Fit an TBATS model to the train data
+model1 <- tbats(train)
+# Print the model summary
+summary(model1)
+
+#component of the model
+comp <- tbats.components(model1)
+plot(comp)
+
+# Make forecasts for the next 168hours
+predict1 <- forecast(model1, h = 48)
+predict1
+# Plot forecast value
+plot(predict1)
+```
+
+## Check the model performance
+```{r}
+# Check residuals from a time series model
+checkresiduals(model1)
+```
+
+```{r}
+# Calculate accuracy metrics
+accuracy_tbats <- accuracy(predict1, test)
+accuracy_tbats
+```
+
+Since from the Ljung-Box test, we will transform the data to see if the model fits better
+```{r}
+# Transform the data using Box Cox transformation
+lambda_value <- BoxCox.lambda(train)
+
+# Fit a TBATS model with modified parameters
+model2 <- tbats(train, seasonal.periods = 24, use.box.cox = TRUE, lambda = lambda_value, use.parallel = FALSE)
+#predict on next 48 hrs
+predict2 <- forecast(model2, h = 48)
+predict2
+# Plot forecast value
+plot(predict2)
+```
+```{r}
+checkresiduals(model2)
+```
+```{r}
+# Calculate accuracy metrics
+accuracy_tbats2 <- accuracy(predict2, test)
+accuracy_tbats2
+```
